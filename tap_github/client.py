@@ -362,10 +362,55 @@ class GitHubRestStream(RESTStream):
 
 
 class GitHubDiffStream(GitHubRestStream):
-    """Base class for GitHub diff streams."""
+    """Base class for GitHub diff streams.
+
+    Diff payloads are immutable (a commit's diff never changes; a PR's diff only
+    changes while the PR is open, which bumps the PR's ``updated_at``). Subclasses
+    can therefore replicate INCREMENTALLY instead of FULL_TABLE by declaring:
+
+      * ``replication_key``  - a timestamp field injected into each record
+      * ``parent_timestamp_context_key`` - the child-context key carrying the
+        parent-derived timestamp (commit date / PR updated_at)
+
+    Contexts whose timestamp is at or below the partition bookmark *as of run
+    start* are skipped before any HTTP request is made, which is where the
+    entire cost of these streams lives (one API call per diff).
+    """
 
     # Known Github API errors for diff requests
     tolerated_http_errors: ClassVar[list[int]] = [404, 406, 422, 500, 502, 504]
+
+    # Child-context key holding the parent timestamp used for incremental skip.
+    # When None (default), behavior is identical to upstream (full table).
+    parent_timestamp_context_key: str | None = None
+
+    @property
+    def _frozen_bookmarks(self) -> dict:
+        """Per-partition bookmarks captured at run start.
+
+        Children sync newest-first (parents emit descending), so a partition's
+        live bookmark jumps to the newest timestamp as soon as its first context
+        finalizes; comparing later (older) contexts against the *live* bookmark
+        would wrongly skip the rest of the run. Freeze the first reading per
+        partition and compare against that for the whole run.
+        """
+        if not hasattr(self, "_frozen_bookmarks_cache"):
+            self._frozen_bookmarks_cache: dict = {}
+        return self._frozen_bookmarks_cache
+
+    def get_records(self, context: Context | None) -> Iterable[dict[str, Any]]:
+        """Skip the API call entirely for diffs already captured by a prior run."""
+        ts_key = self.parent_timestamp_context_key
+        if ts_key and self.replication_key and context and context.get(ts_key):
+            partition = (context.get("org"), context.get("repo"))
+            if partition not in self._frozen_bookmarks:
+                self._frozen_bookmarks[partition] = self.get_starting_timestamp(
+                    context
+                )
+            bookmark = self._frozen_bookmarks[partition]
+            if bookmark is not None and parse(str(context[ts_key])) <= bookmark:
+                return
+        yield from super().get_records(context)
 
     @property
     def http_headers(self) -> dict:

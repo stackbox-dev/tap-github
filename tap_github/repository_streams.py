@@ -1149,6 +1149,9 @@ class CommitsStream(GitHubRestStream):
             "repo": context["repo"] if context else None,
             "repo_id": context["repo_id"] if context else None,
             "commit_id": record["sha"],
+            # Lets child diff streams replicate incrementally (commit diffs are
+            # immutable, so anything at/below the child's bookmark is skipped).
+            "commit_timestamp": record["commit_timestamp"],
         }
 
     schema = th.PropertiesList(
@@ -1241,6 +1244,12 @@ class CommitDiffsStream(GitHubDiffStream):
     parent_stream_type = CommitsStream
     ignore_parent_replication_key = False
     state_partitioning_keys: ClassVar[list[str]] = ["repo", "org"]
+    # Commit diffs are immutable: replicate incrementally on the commit's
+    # timestamp (injected via child context) instead of full-table re-fetching
+    # every diff on every run. See GitHubDiffStream.get_records.
+    replication_key = "commit_timestamp"
+    parent_timestamp_context_key = "commit_timestamp"
+    is_sorted = False
 
     def post_process(self, row: dict, context: Context | None = None) -> dict:
         row = super().post_process(row, context)
@@ -1250,6 +1259,7 @@ class CommitDiffsStream(GitHubDiffStream):
             row["repo"] = context["repo"]
             row["repo_id"] = context["repo_id"]
             row["commit_id"] = context["commit_id"]
+            row["commit_timestamp"] = context["commit_timestamp"]
         return row
 
     schema = th.PropertiesList(
@@ -1258,6 +1268,7 @@ class CommitDiffsStream(GitHubDiffStream):
         th.Property("repo", th.StringType),
         th.Property("repo_id", th.IntegerType),
         th.Property("commit_id", th.StringType),
+        th.Property("commit_timestamp", th.DateTimeType),
         # Rest
         th.Property("diff", th.StringType),
         th.Property("success", th.BooleanType),
@@ -1370,6 +1381,9 @@ class PullRequestsStream(GitHubRestStream):
                 "repo_id": context["repo_id"],
                 "pull_number": record["number"],
                 "pull_id": record["id"],
+                # Lets child diff streams replicate incrementally: a PR's diff
+                # only changes while the PR is open, which bumps updated_at.
+                "pr_updated_at": record["updated_at"],
             }
         return {
             "pull_number": record["number"],
@@ -1377,6 +1391,7 @@ class PullRequestsStream(GitHubRestStream):
             "org": record["base"]["user"]["login"],
             "repo": record["base"]["repo"]["name"],
             "repo_id": record["base"]["repo"]["id"],
+            "pr_updated_at": record["updated_at"],
         }
 
     schema = th.PropertiesList(
@@ -1580,6 +1595,13 @@ class PullRequestDiffsStream(GitHubDiffStream):
     parent_stream_type = PullRequestsStream
     ignore_parent_replication_key = False
     state_partitioning_keys: ClassVar[list[str]] = ["repo", "org"]
+    # A PR's diff only changes while the PR is open, which bumps updated_at:
+    # replicate incrementally on the parent PR's updated_at instead of
+    # full-table re-fetching every PR diff on every run. Note: on a fresh
+    # install this skips diffs of PRs last updated before start_date.
+    replication_key = "pr_updated_at"
+    parent_timestamp_context_key = "pr_updated_at"
+    is_sorted = False
 
     def post_process(self, row: dict, context: Context | None = None) -> dict:
         row = super().post_process(row, context)
@@ -1590,6 +1612,7 @@ class PullRequestDiffsStream(GitHubDiffStream):
             row["repo_id"] = context["repo_id"]
             row["pull_number"] = context["pull_number"]
             row["pull_id"] = context["pull_id"]
+            row["pr_updated_at"] = context["pr_updated_at"]
         return row
 
     schema = th.PropertiesList(
@@ -1599,6 +1622,7 @@ class PullRequestDiffsStream(GitHubDiffStream):
         th.Property("repo_id", th.IntegerType),
         th.Property("pull_number", th.IntegerType),
         th.Property("pull_id", th.IntegerType),
+        th.Property("pr_updated_at", th.DateTimeType),
         # Rest
         th.Property("diff", th.StringType),
         th.Property("success", th.BooleanType),

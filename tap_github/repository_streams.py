@@ -3259,6 +3259,9 @@ class ExtraMetricsStream(GitHubRestStream):
     parent_stream_type = RepositoryStream
     ignore_parent_replication_key = True
     state_partitioning_keys: ClassVar[list[str]] = ["repo_id"]
+    # The repository page is not available for every repository. A missing
+    # page means no extra metrics to emit for this stream, not a failed sync.
+    tolerated_http_errors: ClassVar[list[int]] = [404]
 
     @property
     def url_base(self) -> str:
@@ -3268,6 +3271,8 @@ class ExtraMetricsStream(GitHubRestStream):
 
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         """Parse the repository main page to extract extra metrics."""
+        if response.status_code in self.tolerated_http_errors:
+            return
         yield from scrape_metrics(response, self.logger)
 
     def post_process(self, row: dict, context: Context | None = None) -> dict:

@@ -204,6 +204,18 @@ def test_stargazers_rest_other_errors_are_not_suppressed() -> None:
     ):
         list(stream.request_records({}))
 
+
+def test_deployments_payload_accepts_json_object() -> None:
+    """GitHub deployment payload is free-form and may be a JSON object."""
+    import jsonschema
+    from tap_github.repository_streams import DeploymentsStream
+
+    stream = object.__new__(DeploymentsStream)
+    schema = DeploymentsStream.schema
+    jsonschema.validate({"payload": {}}, schema)
+    jsonschema.validate({"payload": "deploying"}, schema)
+    jsonschema.validate({"payload": None}, schema)
+
 repo_list_2 = [
     "MeltanoLabs/tap-github",
     # mistype the repo name so we can check that the tap corrects it

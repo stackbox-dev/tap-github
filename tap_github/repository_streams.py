@@ -3763,7 +3763,14 @@ class DeploymentsStream(GitHubRestStream):
         th.Property("sha", th.StringType),
         th.Property("ref", th.StringType),
         th.Property("task", th.StringType),
-        th.Property("payload", th.StringType),
+        th.Property(
+            "payload",
+            th.CustomType({"type": ["string", "object", "null"]}),
+            description=(
+                "GitHub returns payload as a free-form value: a JSON object, "
+                "a string, or null."
+            ),
+        ),
         th.Property("original_environment", th.StringType),
         th.Property("environment", th.StringType),
         th.Property("description", th.StringType),

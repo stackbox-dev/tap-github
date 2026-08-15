@@ -8,9 +8,10 @@ import pytest
 from bs4 import BeautifulSoup
 from dateutil.parser import isoparse
 from requests import Response
-from singer_sdk.exceptions import RetriableAPIError
+from singer_sdk.exceptions import FatalAPIError, RetriableAPIError
 from singer_sdk.helpers import _catalog as cat_helpers
 from singer_sdk.singerlib import Catalog
+from singer_sdk.streams import GraphQLStream
 
 from tap_github.client import GitHubGraphqlStream
 from tap_github.repository_streams import GitHubRestStream
@@ -44,6 +45,28 @@ def test_graphql_transient_server_error_is_retriable() -> None:
     ).encode()
 
     with pytest.raises(RetriableAPIError, match="Something went wrong"):
+        stream.validate_response(response)
+
+
+def test_graphql_transient_error_from_sdk_validator_is_retriable() -> None:
+    """Handle Singer SDK versions that raise before tap validation runs."""
+    stream = object.__new__(GitHubGraphqlStream)
+    response = Response()
+    response.status_code = 200
+    response.url = "https://api.github.com/graphql"
+    response.reason = "OK"
+    response._content = json.dumps(
+        {"errors": [{"message": "Something went wrong while executing your query"}]}
+    ).encode()
+
+    with (
+        patch.object(
+            GraphQLStream,
+            "validate_response",
+            side_effect=FatalAPIError("base validator rejected GraphQL response"),
+        ),
+        pytest.raises(RetriableAPIError, match="Something went wrong"),
+    ):
         stream.validate_response(response)
 
 repo_list_2 = [

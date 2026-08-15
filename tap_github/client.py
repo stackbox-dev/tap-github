@@ -602,18 +602,26 @@ class GitHubGraphqlStream(GraphQLStream, GitHubRestStream):
             FatalAPIError: If the request is not retriable.
             RetriableAPIError: If the request is retriable.
         """
-        super().validate_response(response)
         rj = response.json()
-        if "errors" in rj:
-            msg = rj["errors"]
-            transient_messages = (
-                str(e.get("message", "")).lower()
-                for e in msg
-                if isinstance(e, dict)
-            )
-            if any(
-                message == "timedout" or "something went wrong" in message
-                for message in transient_messages
-            ):
+        msg = rj.get("errors")
+        transient_messages = (
+            str(e.get("message", "")).lower()
+            for e in msg or []
+            if isinstance(e, dict)
+        )
+        is_transient = any(
+            message == "timedout" or "something went wrong" in message
+            for message in transient_messages
+        )
+
+        try:
+            super().validate_response(response)
+        except FatalAPIError as exc:
+            if is_transient:
+                raise RetriableAPIError(f"Graphql error: {msg}", response) from exc
+            raise
+
+        if msg is not None:
+            if is_transient:
                 raise RetriableAPIError(f"Graphql error: {msg}", response)
             raise FatalAPIError(f"Graphql error: {msg}", response)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup
@@ -21,6 +21,14 @@ from .fixtures import (  # noqa: F401
     repo_list_config,
     username_list_config,
 )
+
+
+def test_backoff_handler_ignores_missing_exception_details() -> None:
+    """A backoff callback must not mask a retriable API error with KeyError."""
+    stream = object.__new__(GitHubRestStream)
+    stream._logger = MagicMock()
+
+    stream.backoff_handler({"args": (), "kwargs": {}})
 
 repo_list_2 = [
     "MeltanoLabs/tap-github",

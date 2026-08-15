@@ -330,13 +330,20 @@ class GitHubRestStream(RESTStream):
     def backoff_handler(self, details: Details) -> None:
         """Handle retriable error by swapping auth token."""
         self.logger.info("Retrying request with different token")
-        # use python introspection to obtain the error object
-        # FIXME: replace this once https://github.com/litl/backoff/issues/158
-        # is fixed
-        exc = cast(
-            "FrameType",
-            cast("FrameType", cast("FrameType", inspect.currentframe()).f_back).f_back,
-        ).f_locals["e"]
+        # Newer backoff versions provide the exception directly. Older versions
+        # required frame introspection, but that frame does not always contain
+        # an ``e`` local (for example after a GraphQL timeout), so treat the
+        # missing context as non-fatal.
+        exc = details.get("exception")
+        if exc is None:
+            frame = inspect.currentframe()
+            try:
+                retry_frame = frame.f_back.f_back if frame and frame.f_back else None
+                exc = retry_frame.f_locals.get("e") if retry_frame else None
+            finally:
+                del frame
+        if exc is None:
+            return
         if (
             exc.response is not None
             and exc.response.status_code == 403

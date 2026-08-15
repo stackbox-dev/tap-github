@@ -1912,6 +1912,24 @@ class StargazersStream(GitHubRestStream):
     # GitHub is missing the "since" parameter on this endpoint.
     use_fake_since_parameter = True
 
+    def request_records(self, context: Context | None) -> Iterable[dict]:
+        """Return no rows when the GitHub integration cannot read stargazers."""
+        try:
+            yield from super().request_records(context)
+        except FatalAPIError as exc:
+            error_message = str(exc)
+            if (
+                "Resource not accessible by integration" in error_message
+                and "stargazers" in error_message
+            ):
+                self.logger.warning(
+                    "Permissions missing to sync stargazers for context %s: %s",
+                    context,
+                    exc,
+                )
+                return
+            raise
+
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         super().__init__(*args, **kwargs)
         # TODO - remove warning with next release.

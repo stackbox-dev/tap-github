@@ -19,6 +19,7 @@ from tap_github.repository_streams import (
     ExtraMetricsStream,
     GitHubRestStream,
     StargazersGraphqlStream,
+    StargazersStream,
 )
 from tap_github.scraping import parse_counter
 from tap_github.tap import TapGitHub
@@ -131,6 +132,35 @@ def test_stargazers_other_forbidden_errors_are_not_suppressed() -> None:
     with (
         patch.object(GitHubGraphqlStream, "request_records", side_effect=error),
         pytest.raises(FatalAPIError, match="FORBIDDEN"),
+    ):
+        list(stream.request_records({}))
+
+
+def test_stargazers_rest_forbidden_integration_is_treated_as_an_empty_stream() -> None:
+    """A GitHub integration may lack the permission for the stargazers REST endpoint."""
+    stream = object.__new__(StargazersStream)
+    stream._logger = MagicMock()
+    error = FatalAPIError(
+        "403 Client Error: b'{\"message\":\"Resource not accessible by integration\"}' "
+        "(Reason: Forbidden) for path: /repos/stackbox-dev/tap-github/stargazers"
+    )
+
+    with patch.object(GitHubRestStream, "request_records", side_effect=error):
+        assert list(stream.request_records({})) == []
+
+
+def test_stargazers_rest_other_errors_are_not_suppressed() -> None:
+    """Only the known permission failure should be treated as empty."""
+    stream = object.__new__(StargazersStream)
+    stream._logger = MagicMock()
+    error = FatalAPIError(
+        "403 Client Error: b'{\"message\":\"rate limit exceeded\"}' "
+        "(Reason: Forbidden) for path: /repos/stackbox-dev/tap-github/stargazers"
+    )
+
+    with (
+        patch.object(GitHubRestStream, "request_records", side_effect=error),
+        pytest.raises(FatalAPIError, match="rate limit"),
     ):
         list(stream.request_records({}))
 

@@ -69,6 +69,19 @@ def test_graphql_transient_error_from_sdk_validator_is_retriable() -> None:
     ):
         stream.validate_response(response)
 
+
+def test_graphql_malformed_server_error_is_retriable() -> None:
+    """A proxy-generated non-JSON 5xx response must still use backoff."""
+    stream = object.__new__(GitHubGraphqlStream)
+    response = Response()
+    response.status_code = 502
+    response.url = "https://api.github.com/graphql"
+    response.reason = "Bad Gateway"
+    response._content = b"upstream connect error or disconnect/reset before headers"
+
+    with pytest.raises(RetriableAPIError, match="502"):
+        stream.validate_response(response)
+
 repo_list_2 = [
     "MeltanoLabs/tap-github",
     # mistype the repo name so we can check that the tap corrects it

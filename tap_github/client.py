@@ -602,7 +602,19 @@ class GitHubGraphqlStream(GraphQLStream, GitHubRestStream):
             FatalAPIError: If the request is not retriable.
             RetriableAPIError: If the request is retriable.
         """
-        rj = response.json()
+        try:
+            rj = response.json()
+        except ValueError as exc:
+            # Proxies and gateways can return an HTML or plain-text 5xx body
+            # instead of GitHub's JSON error envelope. Treat those responses as
+            # transient before attempting to inspect GraphQL errors.
+            if response.status_code >= 500:
+                raise RetriableAPIError(
+                    f"Graphql HTTP error: {response.status_code} "
+                    f"(Reason: {response.reason})",
+                    response,
+                ) from exc
+            raise
         msg = rj.get("errors")
         transient_messages = (
             str(e.get("message", "")).lower()

@@ -3311,6 +3311,9 @@ class DependentsStream(GitHubRestStream):
     parent_stream_type = RepositoryStream
     ignore_parent_replication_key = True
     state_partitioning_keys: ClassVar[list[str]] = ["repo_id"]
+    # The web-scraped page is not available for every repository. A missing
+    # page means there are no rows to emit for this stream, not a failed sync.
+    tolerated_http_errors: ClassVar[list[int]] = [404]
 
     @property
     def url_base(self) -> str:
@@ -3320,6 +3323,8 @@ class DependentsStream(GitHubRestStream):
 
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         """Get the response for the first page and scrape results, potentially iterating through pages."""  # noqa: E501
+        if response.status_code in self.tolerated_http_errors:
+            return
         yield from scrape_dependents(response, self.logger)
 
     def post_process(self, row: dict, context: Context | None = None) -> dict:

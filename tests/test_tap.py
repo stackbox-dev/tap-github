@@ -14,7 +14,7 @@ from singer_sdk.singerlib import Catalog
 from singer_sdk.streams import GraphQLStream
 
 from tap_github.client import GitHubGraphqlStream
-from tap_github.repository_streams import GitHubRestStream
+from tap_github.repository_streams import DependentsStream, GitHubRestStream
 from tap_github.scraping import parse_counter
 from tap_github.tap import TapGitHub
 
@@ -81,6 +81,16 @@ def test_graphql_malformed_server_error_is_retriable() -> None:
 
     with pytest.raises(RetriableAPIError, match="502"):
         stream.validate_response(response)
+
+
+def test_dependents_404_is_treated_as_an_empty_stream() -> None:
+    """GitHub may omit the web-scraped dependents page for a repository."""
+    stream = object.__new__(DependentsStream)
+    response = Response()
+    response.status_code = 404
+
+    assert 404 in stream.tolerated_http_errors
+    assert list(stream.parse_response(response)) == []
 
 repo_list_2 = [
     "MeltanoLabs/tap-github",

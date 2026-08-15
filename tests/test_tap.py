@@ -12,6 +12,7 @@ from singer_sdk.exceptions import RetriableAPIError
 from singer_sdk.helpers import _catalog as cat_helpers
 from singer_sdk.singerlib import Catalog
 
+from tap_github.client import GitHubGraphqlStream
 from tap_github.repository_streams import GitHubRestStream
 from tap_github.scraping import parse_counter
 from tap_github.tap import TapGitHub
@@ -29,6 +30,21 @@ def test_backoff_handler_ignores_missing_exception_details() -> None:
     stream._logger = MagicMock()
 
     stream.backoff_handler({"args": (), "kwargs": {}})
+
+
+def test_graphql_transient_server_error_is_retriable() -> None:
+    """GitHub's generic GraphQL server error should use backoff, not abort."""
+    stream = object.__new__(GitHubGraphqlStream)
+    response = Response()
+    response.status_code = 200
+    response.url = "https://api.github.com/graphql"
+    response.reason = "OK"
+    response._content = json.dumps(
+        {"errors": [{"message": "Something went wrong while executing your query"}]}
+    ).encode()
+
+    with pytest.raises(RetriableAPIError, match="Something went wrong"):
+        stream.validate_response(response)
 
 repo_list_2 = [
     "MeltanoLabs/tap-github",

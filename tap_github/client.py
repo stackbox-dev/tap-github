@@ -606,6 +606,14 @@ class GitHubGraphqlStream(GraphQLStream, GitHubRestStream):
         rj = response.json()
         if "errors" in rj:
             msg = rj["errors"]
-            if any(e.get("message") == "timedout" for e in msg if isinstance(e, dict)):
+            transient_messages = (
+                str(e.get("message", "")).lower()
+                for e in msg
+                if isinstance(e, dict)
+            )
+            if any(
+                message == "timedout" or "something went wrong" in message
+                for message in transient_messages
+            ):
                 raise RetriableAPIError(f"Graphql error: {msg}", response)
             raise FatalAPIError(f"Graphql error: {msg}", response)

@@ -3437,11 +3437,16 @@ class DependenciesStream(GitHubGraphqlStream):
         try:
             yield from super().get_records(context)
         except RetriableAPIError as e:
-            if "timedout" in str(e):
+            # GitHub's dependency graph can fail persistently for a repository
+            # (server-side timeout / internal error). Keep the stream for repos
+            # where it works; skip only the affected repo rather than aborting
+            # the whole sync.
+            if "timedout" in str(e) or "something went wrong" in str(e).lower():
                 self.logger.warning(
-                    "Skipping dependencies for %s/%s due to GitHub API timeout.",
+                    "Skipping dependencies for %s/%s: %s",
                     context and context.get("org"),
                     context and context.get("repo"),
+                    e,
                 )
             else:
                 raise

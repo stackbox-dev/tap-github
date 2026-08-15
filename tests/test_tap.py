@@ -15,6 +15,7 @@ from singer_sdk.streams import GraphQLStream
 
 from tap_github.client import GitHubGraphqlStream
 from tap_github.repository_streams import (
+    DependenciesStream,
     DependentsStream,
     ExtraMetricsStream,
     GitHubRestStream,
@@ -107,6 +108,45 @@ def test_extra_metrics_404_is_treated_as_an_empty_stream() -> None:
 
     assert 404 in stream.tolerated_http_errors
     assert list(stream.parse_response(response)) == []
+
+
+def test_dependencies_timeout_is_treated_as_an_empty_stream() -> None:
+    """GitHub's dependency graph can time out server-side for a repository."""
+    stream = object.__new__(DependenciesStream)
+    stream._logger = MagicMock()
+    error = RetriableAPIError(
+        "Graphql error: [{'path': ['repository', 'dependencyGraphManifests'], "
+        "'message': 'timedout'}]"
+    )
+
+    with patch.object(GitHubGraphqlStream, "get_records", side_effect=error):
+        assert list(stream.get_records({})) == []
+
+
+def test_dependencies_internal_error_is_treated_as_an_empty_stream() -> None:
+    """GitHub's dependency graph can return an internal error for a repository."""
+    stream = object.__new__(DependenciesStream)
+    stream._logger = MagicMock()
+    error = RetriableAPIError(
+        "Graphql error: [{'message': 'Something went wrong while executing "
+        "your query'}]"
+    )
+
+    with patch.object(GitHubGraphqlStream, "get_records", side_effect=error):
+        assert list(stream.get_records({})) == []
+
+
+def test_dependencies_other_errors_are_not_suppressed() -> None:
+    """Only the known transient failures should be treated as empty."""
+    stream = object.__new__(DependenciesStream)
+    stream._logger = MagicMock()
+    error = RetriableAPIError("Graphql error: rate limit exceeded")
+
+    with (
+        patch.object(GitHubGraphqlStream, "get_records", side_effect=error),
+        pytest.raises(RetriableAPIError, match="rate limit"),
+    ):
+        list(stream.get_records({}))
 
 
 def test_stargazers_forbidden_integration_is_treated_as_an_empty_stream() -> None:

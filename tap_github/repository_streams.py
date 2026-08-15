@@ -1962,6 +1962,24 @@ class StargazersGraphqlStream(GitHubGraphqlStream):
     # The parent repository object changes if the number of stargazers changes.
     ignore_parent_replication_key = False
 
+    def request_records(self, context: Context | None) -> Iterable[dict]:
+        """Return no rows when the GitHub integration cannot read stargazers."""
+        try:
+            yield from super().request_records(context)
+        except FatalAPIError as exc:
+            error_message = str(exc)
+            if (
+                "Resource not accessible by integration" in error_message
+                and "stargazers" in error_message
+            ):
+                self.logger.warning(
+                    "Permissions missing to sync stargazers for context %s: %s",
+                    context,
+                    exc,
+                )
+                return
+            raise
+
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         super().__init__(*args, **kwargs)
         # TODO - remove warning with next release.

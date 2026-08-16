@@ -3436,12 +3436,18 @@ class DependenciesStream(GitHubGraphqlStream):
     def get_records(self, context: Context | None) -> Iterable[dict[str, Any]]:
         try:
             yield from super().get_records(context)
-        except RetriableAPIError as e:
-            # GitHub's dependency graph can fail persistently for a repository
-            # (server-side timeout / internal error). Keep the stream for repos
-            # where it works; skip only the affected repo rather than aborting
-            # the whole sync.
-            if "timedout" in str(e) or "something went wrong" in str(e).lower():
+        except (RetriableAPIError, FatalAPIError) as e:
+            # GitHub's dependency graph can fail persistently for a repository:
+            # a server-side timeout, an internal error, or a dependency that
+            # lives in an organization that blocks our integration (e.g. an IP
+            # allow list). Keep the stream for repos where it works; skip only
+            # the affected repo rather than aborting the whole sync.
+            message = str(e)
+            if (
+                "timedout" in message
+                or "something went wrong" in message.lower()
+                or "not permitted to access this resource" in message
+            ):
                 self.logger.warning(
                     "Skipping dependencies for %s/%s: %s",
                     context and context.get("org"),

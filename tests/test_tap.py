@@ -149,6 +149,23 @@ def test_dependencies_other_errors_are_not_suppressed() -> None:
         list(stream.get_records({}))
 
 
+def test_dependencies_blocked_dependency_org_is_treated_as_an_empty_stream() -> None:
+    """A dependency in an org that blocks the integration should skip that repo."""
+    stream = object.__new__(DependenciesStream)
+    stream._logger = MagicMock()
+    error = FatalAPIError(
+        "Graphql error: [{'type': 'FORBIDDEN', "
+        "'path': ['repository', 'dependencyGraphManifests', 'nodes', 0, "
+        "'dependencies', 'nodes', 29, 'dependency'], "
+        "'message': 'Although you appear to have the correct authorization "
+        "credentials, the `Shopify` organization has an IP allow list enabled, "
+        "and your IP address is not permitted to access this resource.'}]"
+    )
+
+    with patch.object(GitHubGraphqlStream, "get_records", side_effect=error):
+        assert list(stream.get_records({})) == []
+
+
 def test_stargazers_forbidden_integration_is_treated_as_an_empty_stream() -> None:
     """A GitHub integration may lack the permission for the stargazers field."""
     stream = object.__new__(StargazersGraphqlStream)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,6 +20,7 @@ from tap_github.repository_streams import (
     DependentsStream,
     ExtraMetricsStream,
     GitHubRestStream,
+    ReviewsStream,
     StargazersGraphqlStream,
     StargazersStream,
 )
@@ -38,6 +40,57 @@ def test_backoff_handler_ignores_missing_exception_details() -> None:
     stream._logger = MagicMock()
 
     stream.backoff_handler({"args": (), "kwargs": {}})
+
+
+def test_parent_timestamp_stream_skips_already_synced_contexts() -> None:
+    """A child stream must not re-fetch contexts at/below its partition bookmark."""
+    from tap_github.client import GitHubParentTimestampStream
+
+    class FakeStream(GitHubParentTimestampStream):
+        name = "fake"
+        replication_key = "parent_ts"
+        parent_timestamp_context_key = "parent_ts"
+        state_partitioning_keys = ["repo", "org"]
+        schema = {"type": ["object", "null"], "properties": {}}
+
+    stream = object.__new__(FakeStream)
+    stream._logger = MagicMock()
+    stream._state_manager = MagicMock()
+    stream.state_partitioning_keys = ["repo", "org"]
+    stream._config = {}
+    stream._tap = MagicMock()
+
+    def fake_starting_timestamp(context):
+        # Bookmark from the prior successful run: the partition was synced up to
+        # this timestamp, so anything at/below it must be skipped.
+        return datetime(2026, 8, 10, tzinfo=timezone.utc)
+
+    with (
+        patch.object(
+            FakeStream, "get_starting_timestamp", side_effect=fake_starting_timestamp
+        ),
+    ):
+        # Context timestamp at the bookmark -> skipped (no fetch called).
+        with patch.object(
+            FakeStream, "request_records", side_effect=AssertionError("should not fetch")
+        ) as mock_request:
+            assert list(
+                stream.get_records({"org": "o", "repo": "r", "parent_ts": "2026-08-10T00:00:00Z"})
+            ) == []
+        assert mock_request.call_count == 0
+        # Context timestamp newer than the bookmark -> fetched.
+        with patch.object(
+            FakeStream, "request_records", return_value=iter([{"id": 1}])
+        ):
+            assert list(
+                stream.get_records({"org": "o", "repo": "r", "parent_ts": "2026-08-10T00:00:01Z"})
+            ) == [{"id": 1}]
+
+
+def test_reviews_stream_is_incremental_on_pr_updated_at() -> None:
+    """Reviews replicate incrementally on the parent PR's updated_at."""
+    assert ReviewsStream.parent_timestamp_context_key == "pr_updated_at"
+    assert ReviewsStream.replication_key == "pr_updated_at"
 
 
 def test_graphql_transient_server_error_is_retriable() -> None:

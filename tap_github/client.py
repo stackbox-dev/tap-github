@@ -368,24 +368,29 @@ class GitHubRestStream(RESTStream):
         return {"rest": 1, "graphql": 0, "search": 0}
 
 
-class GitHubDiffStream(GitHubRestStream):
-    """Base class for GitHub diff streams.
+class GitHubParentTimestampStream(GitHubRestStream):
+    """Base for child streams that replicate INCREMENTALLY on a parent-derived
+    timestamp instead of full-table re-fetching every child context on every run.
 
-    Diff payloads are immutable (a commit's diff never changes; a PR's diff only
-    changes while the PR is open, which bumps the PR's ``updated_at``). Subclasses
-    can therefore replicate INCREMENTALLY instead of FULL_TABLE by declaring:
+    Many GitHub child endpoints fetch the full list for one parent item (a PR's
+    reviews, a PR's commits, a commit's diff, a workflow run's jobs, a
+    deployment's statuses). The parent-derived timestamp (e.g. the PR's
+    ``updated_at`` or a commit's ``commit_timestamp``) is injected into the
+    child context. Contexts whose timestamp is at or below the partition bookmark
+    *as of run start* are skipped before any HTTP request is made — that is where
+    the entire cost of these streams lives (one API call per child context).
+
+    Subclasses set:
 
       * ``replication_key``  - a timestamp field injected into each record
       * ``parent_timestamp_context_key`` - the child-context key carrying the
-        parent-derived timestamp (commit date / PR updated_at)
+        parent-derived timestamp
 
-    Contexts whose timestamp is at or below the partition bookmark *as of run
-    start* are skipped before any HTTP request is made, which is where the
-    entire cost of these streams lives (one API call per diff).
+    The bookmark is frozen per partition at run start: children sync newest-first
+    (parents emit descending), so a partition's live bookmark jumps to the newest
+    timestamp as soon as its first context finalizes; comparing later (older)
+    contexts against the *live* bookmark would wrongly skip the rest of the run.
     """
-
-    # Known Github API errors for diff requests
-    tolerated_http_errors: ClassVar[list[int]] = [404, 406, 422, 500, 502, 504]
 
     # Child-context key holding the parent timestamp used for incremental skip.
     # When None (default), behavior is identical to upstream (full table).
@@ -406,10 +411,16 @@ class GitHubDiffStream(GitHubRestStream):
         return self._frozen_bookmarks_cache
 
     def get_records(self, context: Context | None) -> Iterable[dict[str, Any]]:
-        """Skip the API call entirely for diffs already captured by a prior run."""
+        """Skip the API call entirely for contexts already captured by a prior run."""
         ts_key = self.parent_timestamp_context_key
         if ts_key and self.replication_key and context and context.get(ts_key):
-            partition = (context.get("org"), context.get("repo"))
+            # Key the frozen reading on this stream's state partitioning keys so
+            # per-partition bookmarks (e.g. keyed on deployment_id / run_id) stay
+            # independent instead of sharing one repo-level value.
+            partition_keys = self.state_partitioning_keys or ["org", "repo"]
+            partition = tuple(
+                (key, context.get(key)) for key in partition_keys if key in context
+            )
             if partition not in self._frozen_bookmarks:
                 self._frozen_bookmarks[partition] = self.get_starting_timestamp(
                     context
@@ -418,6 +429,26 @@ class GitHubDiffStream(GitHubRestStream):
             if bookmark is not None and parse(str(context[ts_key])) <= bookmark:
                 return
         yield from super().get_records(context)
+
+
+class GitHubDiffStream(GitHubParentTimestampStream):
+    """Base class for GitHub diff streams.
+
+    Diff payloads are immutable (a commit's diff never changes; a PR's diff only
+    changes while the PR is open, which bumps the PR's ``updated_at``). Subclasses
+    can therefore replicate INCREMENTALLY instead of FULL_TABLE by declaring:
+
+      * ``replication_key``  - a timestamp field injected into each record
+      * ``parent_timestamp_context_key`` - the child-context key carrying the
+        parent-derived timestamp (commit date / PR updated_at)
+
+    Contexts whose timestamp is at or below the partition bookmark *as of run
+    start* are skipped before any HTTP request is made, which is where the
+    entire cost of these streams lives (one API call per diff).
+    """
+
+    # Known Github API errors for diff requests
+    tolerated_http_errors: ClassVar[list[int]] = [404, 406, 422, 500, 502, 504]
 
     @property
     def http_headers(self) -> dict:

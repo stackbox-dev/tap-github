@@ -11,7 +11,12 @@ from singer_sdk import typing as th  # JSON Schema typing helpers
 from singer_sdk.exceptions import FatalAPIError, RetriableAPIError
 from singer_sdk.helpers.jsonpath import extract_jsonpath
 
-from tap_github.client import GitHubDiffStream, GitHubGraphqlStream, GitHubRestStream
+from tap_github.client import (
+    GitHubDiffStream,
+    GitHubGraphqlStream,
+    GitHubParentTimestampStream,
+    GitHubRestStream,
+)
 from tap_github.schema_objects import (
     files_object,
     label_object,
@@ -1491,13 +1496,19 @@ class PullRequestsStream(GitHubRestStream):
     ).to_dict()
 
 
-class PullRequestCommitsStream(GitHubRestStream):
+class PullRequestCommitsStream(GitHubParentTimestampStream):
     name = "pull_request_commits"
     path = "/repos/{org}/{repo}/pulls/{pull_number}/commits"
     ignore_parent_replication_key = False
     primary_keys: ClassVar[list[str]] = ["node_id"]
     parent_stream_type = PullRequestsStream
     state_partitioning_keys: ClassVar[list[str]] = ["repo", "org"]
+    # A PR's commit list only grows while the PR is open, which bumps updated_at:
+    # replicate incrementally on the parent PR's updated_at instead of
+    # full-table re-fetching every PR's commits on every run.
+    replication_key = "pr_updated_at"
+    parent_timestamp_context_key = "pr_updated_at"
+    is_sorted = False
 
     def get_child_context(self, record: dict, context: Context | None) -> dict:
         return {
@@ -1506,7 +1517,16 @@ class PullRequestCommitsStream(GitHubRestStream):
             "repo_id": context["repo_id"] if context else None,
             "pull_number": context["pull_number"] if context else None,
             "commit_id": record["sha"],
+            # Lets child diff streams replicate incrementally (commit diffs are
+            # immutable, so anything at/below the child's bookmark is skipped).
+            "commit_timestamp": record["commit"]["committer"]["date"],
         }
+
+    def post_process(self, row: dict, context: Context | None = None) -> dict:
+        row = super().post_process(row, context)
+        if context is not None:
+            row["pr_updated_at"] = context.get("pr_updated_at")
+        return row
 
     schema = th.PropertiesList(
         # Parent keys
@@ -1514,6 +1534,7 @@ class PullRequestCommitsStream(GitHubRestStream):
         th.Property("repo", th.StringType),
         th.Property("repo_id", th.IntegerType),
         th.Property("pull_number", th.IntegerType),
+        th.Property("pr_updated_at", th.DateTimeType),
         # Rest
         th.Property("url", th.StringType),
         th.Property("sha", th.StringType),
@@ -1637,6 +1658,12 @@ class PullRequestCommitDiffsStream(GitHubDiffStream):
     parent_stream_type = PullRequestCommitsStream
     ignore_parent_replication_key = False
     state_partitioning_keys: ClassVar[list[str]] = ["repo", "org"]
+    # Commit diffs are immutable: replicate incrementally on the commit's
+    # timestamp (injected via child context) instead of full-table re-fetching
+    # every diff on every run. See GitHubParentTimestampStream.get_records.
+    replication_key = "commit_timestamp"
+    parent_timestamp_context_key = "commit_timestamp"
+    is_sorted = False
 
     def post_process(self, row: dict, context: Context | None = None) -> dict:
         row = super().post_process(row, context)
@@ -1647,6 +1674,7 @@ class PullRequestCommitDiffsStream(GitHubDiffStream):
             row["repo_id"] = context["repo_id"]
             row["pull_number"] = context["pull_number"]
             row["commit_id"] = context["commit_id"]
+            row["commit_timestamp"] = context["commit_timestamp"]
         return row
 
     schema = th.PropertiesList(
@@ -1656,6 +1684,7 @@ class PullRequestCommitDiffsStream(GitHubDiffStream):
         th.Property("repo_id", th.IntegerType),
         th.Property("pull_number", th.IntegerType),
         th.Property("commit_id", th.StringType),
+        th.Property("commit_timestamp", th.DateTimeType),
         # Rest
         th.Property("diff", th.StringType),
         th.Property("success", th.BooleanType),
@@ -1663,13 +1692,19 @@ class PullRequestCommitDiffsStream(GitHubDiffStream):
     ).to_dict()
 
 
-class ReviewsStream(GitHubRestStream):
+class ReviewsStream(GitHubParentTimestampStream):
     name = "reviews"
     path = "/repos/{org}/{repo}/pulls/{pull_number}/reviews"
     primary_keys: ClassVar[list[str]] = ["id"]
     parent_stream_type = PullRequestsStream
     ignore_parent_replication_key = False
     state_partitioning_keys: ClassVar[list[str]] = ["repo", "org"]
+    # Reviews only change while the PR is open, which bumps updated_at:
+    # replicate incrementally on the parent PR's updated_at instead of
+    # full-table re-fetching every PR's reviews on every run.
+    replication_key = "pr_updated_at"
+    parent_timestamp_context_key = "pr_updated_at"
+    is_sorted = False
 
     schema = th.PropertiesList(
         # Parent keys
@@ -1678,6 +1713,7 @@ class ReviewsStream(GitHubRestStream):
         th.Property("org", th.StringType),
         th.Property("repo", th.StringType),
         th.Property("repo_id", th.IntegerType),
+        th.Property("pr_updated_at", th.DateTimeType),
         # Rest
         th.Property("id", th.IntegerType),
         th.Property("node_id", th.StringType),
@@ -1709,6 +1745,7 @@ class ReviewsStream(GitHubRestStream):
             row["repo_id"] = context["repo_id"]
             row["pull_number"] = context["pull_number"]
             row["pull_id"] = context["pull_id"]
+            row["pr_updated_at"] = context.get("pr_updated_at")
         return row
 
 
@@ -3206,10 +3243,14 @@ class WorkflowRunsStream(GitHubRestStream):
             "repo": context["repo"] if context else None,
             "run_id": record["id"],
             "repo_id": context["repo_id"] if context else None,
+            # Lets child streams replicate incrementally: a run's jobs are
+            # immutable once the run finishes, so anything at/below the child's
+            # bookmark (keyed on the run's created_at) is skipped.
+            "run_created_at": record["created_at"],
         }
 
 
-class WorkflowRunJobsStream(GitHubRestStream):
+class WorkflowRunJobsStream(GitHubParentTimestampStream):
     """Defines 'workflow_run_jobs' stream."""
 
     MAX_PER_PAGE = 80
@@ -3221,12 +3262,25 @@ class WorkflowRunJobsStream(GitHubRestStream):
     ignore_parent_replication_key = False
     state_partitioning_keys: ClassVar[list[str]] = ["repo", "org", "run_id"]
     records_jsonpath = "$.jobs[*]"
+    # A run's jobs are immutable once the run completes: replicate incrementally
+    # on the parent run's created_at instead of full-table re-fetching every
+    # run's jobs on every run.
+    replication_key = "run_created_at"
+    parent_timestamp_context_key = "run_created_at"
+    is_sorted = False
+
+    def post_process(self, row: dict, context: Context | None = None) -> dict:
+        row = super().post_process(row, context)
+        if context is not None:
+            row["run_created_at"] = context.get("run_created_at")
+        return row
 
     schema = th.PropertiesList(
         # Parent keys
         th.Property("repo", th.StringType),
         th.Property("org", th.StringType),
         th.Property("repo_id", th.IntegerType),
+        th.Property("run_created_at", th.DateTimeType),
         # PR keys
         th.Property("id", th.IntegerType),
         th.Property("run_id", th.IntegerType),
@@ -3756,6 +3810,8 @@ class DeploymentsStream(GitHubRestStream):
     parent_stream_type = RepositoryStream
     ignore_parent_replication_key = True
     state_partitioning_keys: ClassVar[list[str]] = ["repo", "org"]
+    # https://docs.github.com/en/rest/deployments/deployments#list-deployments
+    replication_key = "created_at"
 
     schema = th.PropertiesList(
         # Parent Keys
@@ -3822,10 +3878,14 @@ class DeploymentsStream(GitHubRestStream):
             "repo": context["repo"] if context else None,
             "deployment_id": record["id"],
             "repo_id": context["repo_id"] if context else None,
+            # Lets child streams replicate incrementally: deployment statuses
+            # are keyed on the deployment's created_at, so deployments already
+            # captured at/below the child's bookmark are skipped.
+            "deployment_created_at": record["created_at"],
         }
 
 
-class DeploymentStatusesStream(GitHubRestStream):
+class DeploymentStatusesStream(GitHubParentTimestampStream):
     """A stream dedicated to fetching deployment statuses in a repository."""
 
     name = "deployment_statuses"
@@ -3835,6 +3895,18 @@ class DeploymentStatusesStream(GitHubRestStream):
     ignore_parent_replication_key = True
     state_partitioning_keys: ClassVar[list[str]] = ["repo", "org", "deployment_id"]
     tolerated_http_errors: ClassVar[list[int]] = [404]
+    # A deployment's statuses are immutable once the deployment resolves:
+    # replicate incrementally on the parent deployment's created_at instead of
+    # full-table re-fetching every deployment's statuses on every run.
+    replication_key = "deployment_created_at"
+    parent_timestamp_context_key = "deployment_created_at"
+    is_sorted = False
+
+    def post_process(self, row: dict, context: Context | None = None) -> dict:
+        row = super().post_process(row, context)
+        if context is not None:
+            row["deployment_created_at"] = context.get("deployment_created_at")
+        return row
 
     schema = th.PropertiesList(
         # Parent Keys
@@ -3842,6 +3914,7 @@ class DeploymentStatusesStream(GitHubRestStream):
         th.Property("org", th.StringType),
         th.Property("repo_id", th.IntegerType),
         th.Property("deployment_id", th.IntegerType),
+        th.Property("deployment_created_at", th.DateTimeType),
         # Deployment Status Keys
         th.Property("url", th.StringType),
         th.Property("id", th.IntegerType),

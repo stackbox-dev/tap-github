@@ -93,8 +93,8 @@ def test_reviews_stream_is_incremental_on_pr_updated_at() -> None:
     assert ReviewsStream.replication_key == "pr_updated_at"
 
 
-def test_per_item_child_403_permission_is_skipped_not_fatal() -> None:
-    """A per-item child 403 'Resource not accessible by integration' must not abort the run."""
+def test_resource_not_accessible_403_is_skipped_not_fatal() -> None:
+    """A 403 'Resource not accessible by integration' must not abort the sync."""
     from tap_github.repository_streams import PullRequestCommitDiffsStream
 
     stream = object.__new__(PullRequestCommitDiffsStream)
@@ -114,7 +114,7 @@ def test_per_item_child_403_permission_is_skipped_not_fatal() -> None:
         "panzer-frontend/commits/cc30f30"
     )
     with patch.object(
-        GitHubRestStream, "get_records", side_effect=error
+        GitHubRestStream, "request_records", side_effect=error
     ):
         assert list(
             stream.get_records(
@@ -123,7 +123,7 @@ def test_per_item_child_403_permission_is_skipped_not_fatal() -> None:
         ) == []
 
 
-def test_per_item_child_other_403_is_fatal() -> None:
+def test_other_403_is_fatal() -> None:
     """Only the known permission failure should be skipped; others stay fatal."""
     from tap_github.repository_streams import PullRequestCommitDiffsStream
 
@@ -143,7 +143,7 @@ def test_per_item_child_other_403_is_fatal() -> None:
     )
     with (
         patch.object(
-            GitHubRestStream, "get_records", side_effect=error
+            GitHubRestStream, "request_records", side_effect=error
         ),
         pytest.raises(FatalAPIError, match="something else"),
     ):

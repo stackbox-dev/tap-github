@@ -77,7 +77,24 @@ class GitHubRestStream(RESTStream):
         if context is not None and "org" in context:
             self.authenticator.set_organization(context["org"])
 
-        yield from super().get_records(context)
+        try:
+            yield from super().get_records(context)
+        except FatalAPIError as exc:
+            # This GitHub App is not granted every read permission on every
+            # repository (e.g. Stargazing, or a branch/commit endpoint on a
+            # private repo the integration cannot see). GitHub then returns
+            # 403 "Resource not accessible by integration". That item is data
+            # the integration is not permitted to read, so record the limitation
+            # and skip it instead of aborting the entire sync.
+            if "Resource not accessible by integration" in str(exc):
+                self.logger.warning(
+                    "Integration lacks permission for %s context %s: %s; skipping.",
+                    self.name,
+                    context,
+                    exc,
+                )
+                return
+            raise
 
     def get_next_page_token(
         self,
@@ -428,23 +445,7 @@ class GitHubParentTimestampStream(GitHubRestStream):
             bookmark = self._frozen_bookmarks[partition]
             if bookmark is not None and parse(str(context[ts_key])) <= bookmark:
                 return
-        try:
-            yield from super().get_records(context)
-        except FatalAPIError as exc:
-            # A per-item child endpoint (a commit's diff, a PR's commits/reviews,
-            # a run's jobs) can 403 "Resource not accessible by integration" when
-            # the GitHub App lacks permission for that specific item's repository
-            # (e.g. a cross-repo commit). The item is data the integration cannot
-            # read, so skip it rather than aborting the whole sync.
-            if "Resource not accessible by integration" in str(exc):
-                self.logger.warning(
-                    "Integration lacks permission for %s context %s: %s; skipping.",
-                    self.name,
-                    context,
-                    exc,
-                )
-                return
-            raise
+        yield from super().get_records(context)
 
 
 class GitHubDiffStream(GitHubParentTimestampStream):

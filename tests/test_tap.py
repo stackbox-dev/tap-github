@@ -93,6 +93,67 @@ def test_reviews_stream_is_incremental_on_pr_updated_at() -> None:
     assert ReviewsStream.replication_key == "pr_updated_at"
 
 
+def test_per_item_child_403_permission_is_skipped_not_fatal() -> None:
+    """A per-item child 403 'Resource not accessible by integration' must not abort the run."""
+    from tap_github.repository_streams import PullRequestCommitDiffsStream
+
+    stream = object.__new__(PullRequestCommitDiffsStream)
+    stream._logger = MagicMock()
+    stream.parent_timestamp_context_key = "commit_timestamp"
+    stream.replication_key = "commit_timestamp"
+    stream.state_partitioning_keys = ["repo", "org"]
+    stream._config = {}
+    stream._tap = MagicMock()
+    stream._frozen_bookmarks_cache = {}
+    stream._state_manager = MagicMock()
+    stream._state_manager.get_starting_replication_value.return_value = None
+    stream.forced_replication_method = None
+    error = FatalAPIError(
+        "403 Client Error: b'{\"message\":\"Resource not accessible by "
+        "integration\"}' (Reason: Forbidden) for path: /repos/stackbox-dev/"
+        "panzer-frontend/commits/cc30f30"
+    )
+    with patch.object(
+        GitHubRestStream, "get_records", side_effect=error
+    ):
+        assert list(
+            stream.get_records(
+                {"org": "stackbox-dev", "repo": "panzer-frontend", "commit_timestamp": "2026-08-17T00:00:00Z"}
+            )
+        ) == []
+
+
+def test_per_item_child_other_403_is_fatal() -> None:
+    """Only the known permission failure should be skipped; others stay fatal."""
+    from tap_github.repository_streams import PullRequestCommitDiffsStream
+
+    stream = object.__new__(PullRequestCommitDiffsStream)
+    stream._logger = MagicMock()
+    stream.parent_timestamp_context_key = "commit_timestamp"
+    stream.replication_key = "commit_timestamp"
+    stream.state_partitioning_keys = ["repo", "org"]
+    stream._config = {}
+    stream._tap = MagicMock()
+    stream._frozen_bookmarks_cache = {}
+    stream._state_manager = MagicMock()
+    stream._state_manager.get_starting_replication_value.return_value = None
+    stream.forced_replication_method = None
+    error = FatalAPIError(
+        "403 Client Error: b'{\"message\":\"something else\"}' (Reason: Forbidden)"
+    )
+    with (
+        patch.object(
+            GitHubRestStream, "get_records", side_effect=error
+        ),
+        pytest.raises(FatalAPIError, match="something else"),
+    ):
+        list(
+            stream.get_records(
+                {"org": "o", "repo": "r", "commit_timestamp": "2026-08-17T00:00:00Z"}
+            )
+        )
+
+
 def test_graphql_transient_server_error_is_retriable() -> None:
     """GitHub's generic GraphQL server error should use backoff, not abort."""
     stream = object.__new__(GitHubGraphqlStream)

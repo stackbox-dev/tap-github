@@ -428,7 +428,23 @@ class GitHubParentTimestampStream(GitHubRestStream):
             bookmark = self._frozen_bookmarks[partition]
             if bookmark is not None and parse(str(context[ts_key])) <= bookmark:
                 return
-        yield from super().get_records(context)
+        try:
+            yield from super().get_records(context)
+        except FatalAPIError as exc:
+            # A per-item child endpoint (a commit's diff, a PR's commits/reviews,
+            # a run's jobs) can 403 "Resource not accessible by integration" when
+            # the GitHub App lacks permission for that specific item's repository
+            # (e.g. a cross-repo commit). The item is data the integration cannot
+            # read, so skip it rather than aborting the whole sync.
+            if "Resource not accessible by integration" in str(exc):
+                self.logger.warning(
+                    "Integration lacks permission for %s context %s: %s; skipping.",
+                    self.name,
+                    context,
+                    exc,
+                )
+                return
+            raise
 
 
 class GitHubDiffStream(GitHubParentTimestampStream):

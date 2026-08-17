@@ -1526,6 +1526,8 @@ class PullRequestCommitsStream(GitHubParentTimestampStream):
         row = super().post_process(row, context)
         if context is not None:
             row["pr_updated_at"] = context.get("pr_updated_at")
+            if "pull_number" in context:
+                row["pull_number"] = context["pull_number"]
         return row
 
     schema = th.PropertiesList(
@@ -1601,12 +1603,6 @@ class PullRequestCommitsStream(GitHubParentTimestampStream):
             ),
         ),
     ).to_dict()
-
-    def post_process(self, row: dict, context: Context | None = None) -> dict:
-        row = super().post_process(row, context)
-        if context is not None and "pull_number" in context:
-            row["pull_number"] = context["pull_number"]
-        return row
 
 
 class PullRequestDiffsStream(GitHubDiffStream):

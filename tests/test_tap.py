@@ -93,6 +93,43 @@ def test_reviews_stream_is_incremental_on_pr_updated_at() -> None:
     assert ReviewsStream.replication_key == "pr_updated_at"
 
 
+@pytest.mark.parametrize(
+    ("stream_cls", "ctx"),
+    [
+        (
+            "PullRequestCommitsStream",
+            {"org": "o", "repo": "r", "repo_id": 1, "pull_number": 2, "pull_id": 3, "pr_updated_at": "2026-01-01T00:00:00Z"},
+        ),
+        (
+            "ReviewsStream",
+            {"org": "o", "repo": "r", "repo_id": 1, "pull_number": 2, "pull_id": 3, "pr_updated_at": "2026-01-01T00:00:00Z"},
+        ),
+        (
+            "WorkflowRunJobsStream",
+            {"org": "o", "repo": "r", "repo_id": 1, "run_id": 7, "run_created_at": "2026-01-01T00:00:00Z"},
+        ),
+        (
+            "DeploymentStatusesStream",
+            {"org": "o", "repo": "r", "repo_id": 1, "deployment_id": 7, "deployment_created_at": "2026-01-01T00:00:00Z"},
+        ),
+        (
+            "PullRequestCommitDiffsStream",
+            {"org": "o", "repo": "r", "repo_id": 1, "pull_number": 2, "commit_id": "abc", "commit_timestamp": "2026-01-01T00:00:00Z"},
+        ),
+    ],
+)
+def test_converted_streams_inject_replication_key(stream_cls, ctx) -> None:
+    """Every converted stream must inject its replication key so the SDK can update state."""
+    from tap_github import repository_streams as rs
+
+    cls = getattr(rs, stream_cls)
+    stream = object.__new__(cls)
+    stream._logger = MagicMock()
+    row = {"id": 1}
+    out = cls.post_process(stream, row, ctx)
+    assert cls.replication_key in out, f"{stream_cls} missing {cls.replication_key}"
+
+
 def test_resource_not_accessible_403_is_skipped_not_fatal() -> None:
     """A 403 'Resource not accessible by integration' must not abort the sync."""
     from tap_github.repository_streams import PullRequestCommitDiffsStream

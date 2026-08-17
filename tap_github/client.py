@@ -95,6 +95,18 @@ class GitHubRestStream(RESTStream):
                 )
                 return
             raise
+        except RetriableAPIError as exc:
+            # Retries were exhausted because GitHub was transiently unavailable
+            # (e.g. a minutes-long 503 "No server currently available" window).
+            # Skip this context for now rather than aborting the whole sync; the
+            # partition bookmark is left unadvanced, so the next run retries it.
+            self.logger.warning(
+                "%s still unavailable after retries for context %s: %s; skipping this run.",
+                self.name,
+                context,
+                exc,
+            )
+            return
 
     def get_next_page_token(
         self,

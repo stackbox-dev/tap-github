@@ -160,6 +160,31 @@ def test_resource_not_accessible_403_is_skipped_not_fatal() -> None:
         ) == []
 
 
+def test_exhausted_retry_503_is_skipped_not_fatal() -> None:
+    """A transient GitHub outage exhausted at the retry budget must not abort."""
+    from tap_github.repository_streams import CollaboratorsStream
+
+    stream = object.__new__(CollaboratorsStream)
+    stream._logger = MagicMock()
+    stream.parent_timestamp_context_key = None
+    stream.replication_key = None
+    stream.state_partitioning_keys = ["repo", "org"]
+    stream._config = {}
+    stream._tap = MagicMock()
+    stream._state_manager = MagicMock()
+    error = RetriableAPIError(
+        "503 Server Error: b'{\"message\": \"No server is currently available "
+        "to service your request\"}' (Reason: Service Unavailable) for path: "
+        "/repos/stackbox-dev/setu-marico/collaborators"
+    )
+    with patch.object(
+        CollaboratorsStream, "request_records", side_effect=error
+    ):
+        assert list(
+            stream.get_records({"org": "stackbox-dev", "repo": "setu-marico"})
+        ) == []
+
+
 def test_other_403_is_fatal() -> None:
     """Only the known permission failure should be skipped; others stay fatal."""
     from tap_github.repository_streams import PullRequestCommitDiffsStream

@@ -262,8 +262,39 @@ def test_graphql_malformed_server_error_is_retriable() -> None:
     response.reason = "Bad Gateway"
     response._content = b"upstream connect error or disconnect/reset before headers"
 
-    with pytest.raises(RetriableAPIError, match="502"):
+    with pytest.raises(RetriableAPIError, match="Malformed JSON body"):
         stream.validate_response(response)
+
+
+def test_malformed_empty_body_any_status_is_retriable() -> None:
+    """An unparseable (e.g. empty 200) GitHub body must retry, not abort."""
+    stream = object.__new__(GitHubGraphqlStream)
+    response = Response()
+    response.status_code = 200
+    response.url = "https://api.github.com/graphql"
+    response.reason = "OK"
+    response._content = b""
+
+    with pytest.raises(RetriableAPIError, match="Malformed JSON body"):
+        stream.validate_response(response)
+
+
+def test_dependencies_malformed_body_is_skipped_not_fatal() -> None:
+    """An exhausted malformed-body retry on dependencies must skip that repo."""
+    from tap_github.repository_streams import DependenciesStream
+
+    stream = object.__new__(DependenciesStream)
+    stream._logger = MagicMock()
+    error = RetriableAPIError(
+        "Malformed JSON body (status 200) for https://api.github.com/graphql; "
+        "retrying."
+    )
+    with (
+        patch.object(
+            GitHubGraphqlStream, "get_records", side_effect=error
+        ),
+    ):
+        assert list(stream.get_records({})) == []
 
 
 def test_dependents_404_is_treated_as_an_empty_stream() -> None:

@@ -3497,6 +3497,7 @@ class DependenciesStream(GitHubGraphqlStream):
                 "timedout" in message
                 or "something went wrong" in message.lower()
                 or "not permitted to access this resource" in message
+                or "Malformed JSON body" in message
             ):
                 self.logger.warning(
                     "Skipping dependencies for %s/%s: %s",

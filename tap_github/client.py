@@ -665,16 +665,18 @@ class GitHubGraphqlStream(GraphQLStream, GitHubRestStream):
         try:
             rj = response.json()
         except ValueError as exc:
-            # Proxies and gateways can return an HTML or plain-text 5xx body
-            # instead of GitHub's JSON error envelope. Treat those responses as
-            # transient before attempting to inspect GraphQL errors.
-            if response.status_code >= 500:
-                raise RetriableAPIError(
-                    f"Graphql HTTP error: {response.status_code} "
-                    f"(Reason: {response.reason})",
-                    response,
-                ) from exc
-            raise
+            # Proxies, gateways and GitHub itself can return an empty or
+            # non-JSON body (e.g. a 200-style empty reply, or plain-text 5xx)
+            # instead of GitHub's JSON error envelope. We cannot classify
+            # anything from it, so retry it; if retries are exhausted the
+            # stream-level exhausted-retry handling skips that context. This
+            # must cover every status code, not just 5xx — GitHub has returned
+            # empty 200 bodies during outages.
+            raise RetriableAPIError(
+                f"Malformed JSON body (status {response.status_code}) for "
+                f"{response.url}; retrying.",
+                response,
+            ) from exc
         msg = rj.get("errors")
         transient_messages = (
             str(e.get("message", "")).lower()

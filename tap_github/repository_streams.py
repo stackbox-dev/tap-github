@@ -3256,7 +3256,7 @@ class WorkflowRunJobsStream(GitHubParentTimestampStream):
     primary_keys: ClassVar[list[str]] = ["id"]
     parent_stream_type = WorkflowRunsStream
     ignore_parent_replication_key = False
-    state_partitioning_keys: ClassVar[list[str]] = ["repo", "org", "run_id"]
+    state_partitioning_keys: ClassVar[list[str]] = ["repo", "org"]
     records_jsonpath = "$.jobs[*]"
     # A run's jobs are immutable once the run completes: replicate incrementally
     # on the parent run's created_at instead of full-table re-fetching every
@@ -3890,11 +3890,12 @@ class DeploymentStatusesStream(GitHubParentTimestampStream):
     primary_keys: ClassVar[list[str]] = ["node_id"]
     parent_stream_type = DeploymentsStream
     ignore_parent_replication_key = True
-    state_partitioning_keys: ClassVar[list[str]] = ["repo", "org", "deployment_id"]
+    state_partitioning_keys: ClassVar[list[str]] = ["repo", "org"]
     tolerated_http_errors: ClassVar[list[int]] = [404]
     # A deployment's statuses are immutable once the deployment resolves:
-    # replicate incrementally on the parent deployment's created_at instead of
-    # full-table re-fetching every deployment's statuses on every run.
+    # replicate incrementally on the parent deployment's created_at. The
+    # partition is per repo, not per deployment — one partition per deployment
+    # is ~15k entries for web-apps alone and the state blob grows without bound.
     replication_key = "deployment_created_at"
     parent_timestamp_context_key = "deployment_created_at"
     is_sorted = False

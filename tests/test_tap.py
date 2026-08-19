@@ -782,3 +782,108 @@ def test_web_tag_parse_counter():
         "html.parser",
     ).span
     assert parse_counter(tag) == 5_000
+
+
+def test_per_item_child_streams_partition_state_by_repo() -> None:
+    """deployment_statuses / workflow_run_jobs must not create one state
+    partition per deployment or per run: at ~15k deployments in a single repo
+    that is a multi-megabyte state blob that grows without bound."""
+    from tap_github.repository_streams import (
+        DeploymentStatusesStream,
+        WorkflowRunJobsStream,
+    )
+
+    assert DeploymentStatusesStream.state_partitioning_keys == ["repo", "org"]
+    assert WorkflowRunJobsStream.state_partitioning_keys == ["repo", "org"]
+
+
+def test_repo_level_bookmark_skips_older_parent_contexts() -> None:
+    """With a repo-level partition, a context whose parent timestamp is at or
+    below the repo bookmark is skipped without an HTTP request."""
+    from tap_github.repository_streams import DeploymentStatusesStream
+
+    stream = object.__new__(DeploymentStatusesStream)
+    stream._logger = MagicMock()
+    stream._state_manager = MagicMock()
+    stream._config = {}
+    stream._tap = MagicMock()
+
+    bookmark = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    older = {
+        "org": "o",
+        "repo": "r",
+        "deployment_id": 1,
+        "deployment_created_at": "2026-08-09T00:00:00Z",
+    }
+    newer = {
+        "org": "o",
+        "repo": "r",
+        "deployment_id": 2,
+        "deployment_created_at": "2026-08-11T00:00:00Z",
+    }
+
+    with patch.object(
+        DeploymentStatusesStream, "get_starting_timestamp", return_value=bookmark
+    ):
+        with patch.object(
+            DeploymentStatusesStream,
+            "request_records",
+            side_effect=AssertionError("must not fetch an already-synced context"),
+        ) as no_fetch:
+            assert list(stream.get_records(older)) == []
+        assert no_fetch.call_count == 0
+
+        with patch.object(
+            DeploymentStatusesStream, "request_records", return_value=iter([{"id": 9}])
+        ):
+            assert len(list(stream.get_records(newer))) == 1
+
+
+def test_frozen_bookmark_is_shared_across_contexts_in_one_repo() -> None:
+    """Both deployments in a repo compare against the SAME frozen reading, so a
+    newest-first parent cannot advance the live bookmark mid-run and cause the
+    rest of the run to be wrongly skipped."""
+    from tap_github.repository_streams import DeploymentStatusesStream
+
+    stream = object.__new__(DeploymentStatusesStream)
+    stream._logger = MagicMock()
+    stream._state_manager = MagicMock()
+    stream._config = {}
+    stream._tap = MagicMock()
+
+    readings = [
+        datetime(2026, 8, 1, tzinfo=timezone.utc),
+        datetime(2026, 8, 20, tzinfo=timezone.utc),  # would wrongly skip if re-read
+    ]
+    with patch.object(
+        DeploymentStatusesStream, "get_starting_timestamp", side_effect=readings
+    ):
+        with patch.object(
+            DeploymentStatusesStream, "request_records", return_value=iter([{"id": 1}])
+        ):
+            first = list(
+                stream.get_records(
+                    {
+                        "org": "o",
+                        "repo": "r",
+                        "deployment_id": 1,
+                        "deployment_created_at": "2026-08-10T00:00:00Z",
+                    }
+                )
+            )
+        with patch.object(
+            DeploymentStatusesStream, "request_records", return_value=iter([{"id": 2}])
+        ):
+            second = list(
+                stream.get_records(
+                    {
+                        "org": "o",
+                        "repo": "r",
+                        "deployment_id": 2,
+                        "deployment_created_at": "2026-08-05T00:00:00Z",
+                    }
+                )
+            )
+
+    assert len(first) == 1
+    assert len(second) == 1, "second context used a re-read bookmark, not the frozen one"
